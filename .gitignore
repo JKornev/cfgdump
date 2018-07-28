@@ -4,3 +4,5 @@
 *.suo
 
 Debug/
+
+*.opensdf

@@ -117,6 +117,24 @@ void PrintCFGChunk(const MapChunk& chunk, bool clipped, bool& skipped)
 	}
 }
 
+bool IsMemoryFree(ULONGLONG address, ULONGLONG size)
+{
+	MEMORY_BASIC_INFORMATION64 info;
+	auto end = address + size;
+
+	do
+	{
+		HRESULT result = g_DebugDataSpaces->QueryVirtual(address, &info);
+		if (result != S_OK)
+			return false;
+
+
+	}
+	while (info.BaseAddress);
+
+	return false;
+}
+
 void DumpCFGMapRange(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG size, bool clipped)
 {
 	//   Address          0123456789abcdef   0123456789abcdef   0123456789abcdef   0123456789abcdef
@@ -149,7 +167,7 @@ void DumpCFGMapRange(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG size, bool c
 		if (!LoadMapChunk(cfgmap, address, chunkBlockSize, chunk))
 		{
 			//TODO: improve it, not need to print error message for each chunk
-			dprintf(" %016llx | failed, can't load map bits\n", address);
+			//dprintf(" %016llx | failed, can't load map bits\n", address);
 			continue;
 		}
 
@@ -207,11 +225,84 @@ DECLARE_API(cfgrange)
 	}
 }
 
+const char* MemoryTypeToString(DWORD type)
+{
+	switch (type)
+	{
+	case MEM_IMAGE:
+		return "MEM_IMAGE";
+	case MEM_MAPPED:
+		return "MEM_MAPPED";
+	case MEM_PRIVATE:
+		return "MEM_PRIVATE";
+	default:
+		break;
+	}
+
+	return "Unknown";
+}
+
+const char* MemoryStateToString(DWORD state)
+{
+	switch (state)
+	{
+	case MEM_COMMIT:
+		return "MEM_COMMIT";
+	case MEM_FREE:
+		return "MEM_FREE";
+	case MEM_RESERVE:
+		return "MEM_RESERVE";
+	default:
+		break;
+	}
+
+	return "Unknown";
+}
+
 DECLARE_API(cfgdmp)
 {
 	try
 	{
 		Arguments arguments(args);
+		ULONGLONG cfgmap;
+
+		if (!FindCFGMap(cfgmap))
+			return;
+
+
+		auto address = 0ull;
+		while (address < 0x7FFFFFFF)
+		{
+			MEMORY_BASIC_INFORMATION64 info;
+			HRESULT result = g_DebugDataSpaces->QueryVirtual(address, &info);
+			if (result != S_OK)
+			{
+				dprintf("Error, QueryVirtual %x\n", result);
+				address += 0x10000;
+				continue;
+			}
+
+			if (info.State == MEM_FREE)
+			{
+				address += info.RegionSize;
+				continue;
+			}
+
+			dprintf(
+				"\n\n   Range: %016llx - %016llx (%llx), %s, %s\n",
+				address,
+				address + info.RegionSize, 
+				info.RegionSize,
+				MemoryTypeToString(info.Type),
+				MemoryStateToString(info.State)
+			);
+
+			DumpCFGMapRange(cfgmap, address, info.RegionSize, true);
+
+			address += info.RegionSize;
+		}
+
+		/*Arguments arguments(args);
 		ULONGLONG offset = 0, cfgmap = 0, cfg = 0;
 		HRESULT result;
 		ULONG readed;
@@ -221,7 +312,7 @@ DECLARE_API(cfgdmp)
 		
 		dprintf("\nCFG map: %llx\n\n", cfgmap);
 
-		for (ULONG64 i = 0; i < 0x3FFFFF/*(0x7fffffffffffull >> 9) / 8*/; i++)
+		for (ULONG64 i = 0; i < 0x3FFFFF/*(0x7fffffffffffull >> 9) / 8* /; i++)
 		{
 			offset = cfgmap + (i * 8);
 
@@ -248,7 +339,7 @@ DECLARE_API(cfgdmp)
 						dprintf("%llx (1 bit)\n", start);
 				}
 			}
-		}
+		}*/
 	}
 	catch (Exception& e)
 	{
