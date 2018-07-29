@@ -23,6 +23,9 @@ IDebugClient*      g_DebugClient = NULL;
 IDebugSymbols3*    g_DebugSymbols = NULL;
 IDebugDataSpaces2* g_DebugDataSpaces = NULL;
 
+const ULONGLONG MAX_CFGMAP32_SIZE = (0x80000000ull >> 8) * sizeof(ULONG);
+const ULONGLONG MAX_CFGMAP64_SIZE = (0x400000000000ull >> 9) * sizeof(ULONGLONG);
+
 VOID WDBGAPI WinDbgExtensionDllInit(PWINDBG_EXTENSION_APIS lpExtensionApis, USHORT usMajorVersion, USHORT usMinorVersion)
 {
 	ExtensionApis = *lpExtensionApis;
@@ -269,77 +272,43 @@ DECLARE_API(cfgdmp)
 		if (!FindCFGMap(cfgmap))
 			return;
 
+		auto cfgptr = cfgmap;
+		auto cfgtop = cfgmap + MAX_CFGMAP64_SIZE;
 
-		auto address = 0ull;
-		while (address < 0x7FFFFFFF)
+		while (cfgptr < cfgtop)
 		{
 			MEMORY_BASIC_INFORMATION64 info;
-			HRESULT result = g_DebugDataSpaces->QueryVirtual(address, &info);
+			HRESULT result = g_DebugDataSpaces->QueryVirtual(cfgptr, &info);
 			if (result != S_OK)
 			{
-				dprintf("Error, QueryVirtual %x\n", result);
-				address += 0x10000;
+				dprintf("Error, query virtual address %llx failed, code: %x\n", cfgptr, result);
+				cfgptr += 0x1000;
 				continue;
 			}
-
-			if (info.State == MEM_FREE)
+			
+			if (info.AllocationBase != cfgmap)
 			{
-				address += info.RegionSize;
+				dprintf("Error, allocation base missmatched %016llx != %016llx\n", info.AllocationBase, cfgmap);
+				break;
+			}
+
+			if (info.State != MEM_COMMIT || (info.Protect & PAGE_NOACCESS) != 0)
+			{
+				cfgptr += info.RegionSize;
 				continue;
 			}
 
-			dprintf(
-				"\n\n   Range: %016llx - %016llx (%llx), %s, %s\n",
-				address,
-				address + info.RegionSize, 
-				info.RegionSize,
-				MemoryTypeToString(info.Type),
-				MemoryStateToString(info.State)
-			);
+			dprintf("\nCFG map region %016llx - %016llx (%llx)\n", info.BaseAddress, info.BaseAddress + info.RegionSize, info.RegionSize);
 
-			DumpCFGMapRange(cfgmap, address, info.RegionSize, true);
+			auto address = ((cfgptr - cfgmap) << 9ull) / 8;
+			auto size = (info.RegionSize / 8ull) * 0x200ull;
+			dprintf("Region %016llx - %016llx (%llx)\n", address, address + size, size);
 
-			address += info.RegionSize;
+			DumpCFGMapRange(cfgmap, address, size, true);
+
+			cfgptr += info.RegionSize;
 		}
 
-		/*Arguments arguments(args);
-		ULONGLONG offset = 0, cfgmap = 0, cfg = 0;
-		HRESULT result;
-		ULONG readed;
-
-		if (!FindCFGMap(cfgmap))
-			return;
-		
-		dprintf("\nCFG map: %llx\n\n", cfgmap);
-
-		for (ULONG64 i = 0; i < 0x3FFFFF/*(0x7fffffffffffull >> 9) / 8* /; i++)
-		{
-			offset = cfgmap + (i * 8);
-
-			result = g_DebugDataSpaces->ReadVirtual(offset, &cfg, sizeof(cfg), &readed);
-			if (result != S_OK)
-				continue;
-
-			if (cfg == 0)
-				continue;
-
-			//dprintf("#%llx -> %llx\n", i << 9, cfg);
-
-			for (auto a = 0; a < 8 * 8; a++)
-			{
-				auto base = i << 9;
-				auto chkbit = 1ull << a;
-				if ((cfg & chkbit) != 0ull)
-				{
-					//dprintf("%llx -> %llx -> %d -> %llx, %llx\n", base, base + (a * 8), a, cfg, (cfg & (1ull << a)));
-					auto start = base + (a * 8);
-					if ((a & 1) != 0)
-						dprintf("%llx (16 bits)\n", start - 8);
-					else
-						dprintf("%llx (1 bit)\n", start);
-				}
-			}
-		}*/
 	}
 	catch (Exception& e)
 	{
