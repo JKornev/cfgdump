@@ -2,7 +2,7 @@ LIBRARY   Memlog
 EXPORTS  
   ExtensionApiVersion    @1  
   WinDbgExtensionDllInit @2  
-  cfgdmp                 @3  
+  cfgdump                @3  
   cfgrange               @4
 
  
