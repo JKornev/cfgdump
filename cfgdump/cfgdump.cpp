@@ -148,7 +148,7 @@ const char* MemoryTypeToString(DWORD type)
 	case MEM_PRIVATE:
 		return "Private";
 	case 0:
-		return "No-Type";
+		return "None";
 	default:
 		break;
 	}
@@ -351,7 +351,7 @@ void DumpMemoryInCFGRegion(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG size, 
 			MemoryTypeToString(info.Type)
 		);
 		
-		if (!DumpCFGMapRange(cfgmap, ptr, range, 3, true))
+		if (!DumpCFGMapRange(cfgmap, ptr, range, 3, clipped))
 			dprintf("      without cfg bits\n");
 
 		dprintf("\n");
@@ -363,6 +363,8 @@ void DumpFullCFGMap(ULONGLONG cfgmap)
 {
 	auto cfgptr = cfgmap;
 	auto cfgtop = cfgmap + MAX_CFGMAP64_SIZE;
+
+	dprintf("\n");
 
 	PrintCFGMapInfo(cfgmap);
 
@@ -396,7 +398,7 @@ void DumpFullCFGMap(ULONGLONG cfgmap)
 
 		dprintf(" CFG Region: %llx - %llx (%llx)\n\n", address, address + size, size);
 
-		DumpMemoryInCFGRegion(cfgmap, address, size, true);;
+		DumpMemoryInCFGRegion(cfgmap, address, size, true);
 
 		cfgptr += info.RegionSize;
 		dprintf("\n");
@@ -423,13 +425,122 @@ DECLARE_API(cfgdump)
 
 // --------------------------- 
 
+const char* GetCFGRangeState(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG size)
+{
+	const auto chunkBlockSize = 0x200ul;
+
+	auto start = address - (address % chunkBlockSize);
+	auto delta = (address + size) - start;
+	auto chunks = (delta / chunkBlockSize) + (delta % chunkBlockSize ? 1 : 0);
+	bool failed = false;
+
+	for (auto i = 0ull; i < chunks; i++)
+	{
+		MapChunk chunk;
+		auto address = start + (i * chunkBlockSize);
+
+		if (!LoadMapChunk(cfgmap, address, chunkBlockSize, chunk))
+		{
+			failed = true;
+			continue;
+		}
+		
+		if (chunk.cfg64)
+			return "+";
+	}
+
+	return (failed ? "?" : " ");
+}
+
+void DumpMemoryMapInCFGRegion(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG size)
+{
+	auto ptr = address;
+	auto top = address + size;
+
+	dprintf("   Start              End                Size           CFGbits Type       State      Protection\n");
+
+	while (ptr < top)
+	{
+		MEMORY_BASIC_INFORMATION64 info;
+		HRESULT result = g_DebugDataSpaces->QueryVirtual(ptr, &info);
+		if (result != S_OK)
+		{
+			dprintf("Warning: query virtual address %llx failed, code: %x\n", ptr, result);
+			ptr += 0x1000;
+			continue;
+		}
+
+		auto range = info.BaseAddress + info.RegionSize - ptr;
+
+		if (ptr + range > top)
+			range = top - ptr;
+
+		dprintf("  %016llx | %016llx | %016llx | %s | %-8s | %-8s | %08x\n",
+			ptr,
+			ptr + range,
+			range,
+			GetCFGRangeState(cfgmap, ptr, range),
+			MemoryTypeToString(info.Type),
+			MemoryStateToString(info.State),
+			info.Protect
+		);
+
+		ptr += range;
+	}
+}
+
+void DumpCFGCoveredMemory(ULONGLONG cfgmap)
+{
+	auto cfgptr = cfgmap;
+	auto cfgtop = cfgmap + MAX_CFGMAP64_SIZE;
+
+	dprintf("\n");
+
+	PrintCFGMapInfo(cfgmap);
+
+	while (cfgptr < cfgtop)
+	{
+		MEMORY_BASIC_INFORMATION64 info;
+		HRESULT result = g_DebugDataSpaces->QueryVirtual(cfgptr, &info);
+		if (result != S_OK)
+		{
+			dprintf("Warning: query virtual address %llx failed, code: %x\n", cfgptr, result);
+			cfgptr += 0x1000;
+			continue;
+		}
+
+		if (info.AllocationBase != cfgmap)
+		{
+			dprintf("Warning: allocation base missmatched %016llx != %016llx\n", info.AllocationBase, cfgmap);
+			break;
+		}
+
+		if (info.State != MEM_COMMIT || (info.Protect & PAGE_NOACCESS) != 0)
+		{
+			//dprintf("Skip no access: %016llx, %016llx\n", cfgptr, info.RegionSize);
+			cfgptr += info.RegionSize;
+			continue;
+		}
+
+		auto address = ((cfgptr - cfgmap) << 9ull) / 8;
+		auto size = (info.RegionSize / 8ull) * 0x200ull;
+
+		dprintf(" CFG Region: %llx - %llx (%llx)\n\n", address, address + size, size);
+
+		DumpMemoryMapInCFGRegion(cfgmap, address, size);
+
+		cfgptr += info.RegionSize;
+		dprintf("\n");
+	}
+}
+
 DECLARE_API(cfgcover)
 {
 	try
 	{
 		ULONGLONG cfgmap;
 		FindCFGMap(cfgmap);
-		//TODO:
+		DumpCFGCoveredMemory(cfgmap);
 	}
 	catch (Exception& e)
 	{
