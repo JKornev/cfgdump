@@ -179,30 +179,48 @@ std::string ConvertProtectionToString(DWORD protection)
 	std::stringstream out;
 
 	if (protection & PAGE_NOACCESS)
-		out << "PAGE_NOACCESS";
+		out << "NoAccess";
 	else if (protection & PAGE_READONLY)
-		out << "PAGE_READONLY";
+		out << "ReadOnly";
 	else if (protection & PAGE_READWRITE)
-		out << "PAGE_READWRITE";
+		out << "ReadWrite";
 	else if (protection & PAGE_WRITECOPY)
-		out << "PAGE_WRITECOPY";
+		out << "WriteCopy";
 	else if (protection & PAGE_EXECUTE)
-		out << "PAGE_EXECUTE";
+		out << "Execute";
 	else if (protection & PAGE_EXECUTE_READ)
-		out << "PAGE_EXECUTE_READ";
+		out << "ExecuteRead";
 	else if (protection & PAGE_EXECUTE_READWRITE)
-		out << "PAGE_EXECUTE_READWRITE";
+		out << "ExecuteReadWrite";
 	else if (protection & PAGE_EXECUTE_WRITECOPY)
-		out << "PAGE_EXECUTE_WRITECOPY";
+		out << "ExecuteWriteCopy";
 
 	if (protection & PAGE_GUARD)
-		out << "|PAGE_GUARD";
+		out << "|Guard";
 	if (protection & PAGE_NOCACHE)
-		out << "|PAGE_NOCACHE";
+		out << "|NoCache";
 	if (protection & PAGE_WRITECOMBINE)
-		out << "|PAGE_WRITECOMBINE";
+		out << "|WriteCombine";
 
 	return out.str();
+}
+
+void GetMemoryInfoString(MEMORY_BASIC_INFORMATION64& info, char* buffer, size_t size)
+{
+	if (size >= 1)
+		buffer[0] = '\0';
+
+	if (info.Type != MEM_IMAGE)
+		return;
+
+	ULONGLONG base;
+	HRESULT result = g_DebugSymbols->GetModuleByOffset(info.AllocationBase, 0, NULL, &base);
+	if (result != S_OK)
+		return;
+
+	result = g_DebugSymbols->GetModuleNameString(DEBUG_MODNAME_IMAGE, 0, base, buffer, size, NULL);
+	if (result != S_OK)
+		return;
 }
 
 // --------------------------- 
@@ -336,9 +354,9 @@ DECLARE_API(cfgrange)
 		start = std::stoll(arg, 0, 16);
 
 		if (!arguments.GetNext(arg))
-			throw Exception("no size argument\n");
-
-		size = std::stoll(arg, 0, 16);
+			size = 1;
+		else
+			size = std::stoll(arg, 0, 16);
 
 		DumpCFGMapRange(cfgmap, start, size, 1, true);
 	}
@@ -424,7 +442,6 @@ void DumpFullCFGMap(ULONGLONG cfgmap)
 			continue;
 		}
 
-
 		auto address = ((cfgptr - cfgmap) << 9ull) / 8;
 		auto size = (info.RegionSize / 8ull) * 0x200ull;
 
@@ -507,14 +524,18 @@ void DumpMemoryMapInCFGRegion(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG siz
 		if (ptr + range > top)
 			range = top - ptr;
 
-		dprintf("  %016llx | %016llx | %016llx | %s | %-8s | %-8s | %s\n",
+		char memory[MAX_PATH];
+		GetMemoryInfoString(info, memory, sizeof(memory));
+
+		dprintf("  %016llx | %016llx | %016llx | %s | %-8s | %-8s | %-25s %s\n",
 			ptr,
 			ptr + range,
 			range,
 			GetCFGRangeState(cfgmap, ptr, range),
 			MemoryTypeToString(info.Type),
 			MemoryStateToString(info.State),
-			ConvertProtectionToString(info.Protect).c_str()
+			ConvertProtectionToString(info.Protect).c_str(),
+			memory
 		);
 
 		ptr += range;
