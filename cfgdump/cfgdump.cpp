@@ -4,6 +4,7 @@
 #include <dbgeng.h>
 #include "Helper.h"
 #include <string>
+#include <sstream>
 
 #pragma comment(lib, "dbgeng.lib")
 
@@ -171,6 +172,37 @@ const char* MemoryStateToString(DWORD state)
 	}
 
 	return "Unknown";
+}
+
+std::string ConvertProtectionToString(DWORD protection)
+{
+	std::stringstream out;
+
+	if (protection & PAGE_NOACCESS)
+		out << "PAGE_NOACCESS";
+	else if (protection & PAGE_READONLY)
+		out << "PAGE_READONLY";
+	else if (protection & PAGE_READWRITE)
+		out << "PAGE_READWRITE";
+	else if (protection & PAGE_WRITECOPY)
+		out << "PAGE_WRITECOPY";
+	else if (protection & PAGE_EXECUTE)
+		out << "PAGE_EXECUTE";
+	else if (protection & PAGE_EXECUTE_READ)
+		out << "PAGE_EXECUTE_READ";
+	else if (protection & PAGE_EXECUTE_READWRITE)
+		out << "PAGE_EXECUTE_READWRITE";
+	else if (protection & PAGE_EXECUTE_WRITECOPY)
+		out << "PAGE_EXECUTE_WRITECOPY";
+
+	if (protection & PAGE_GUARD)
+		out << "|PAGE_GUARD";
+	if (protection & PAGE_NOCACHE)
+		out << "|PAGE_NOCACHE";
+	if (protection & PAGE_WRITECOMBINE)
+		out << "|PAGE_WRITECOMBINE";
+
+	return out.str();
 }
 
 // --------------------------- 
@@ -475,14 +507,14 @@ void DumpMemoryMapInCFGRegion(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG siz
 		if (ptr + range > top)
 			range = top - ptr;
 
-		dprintf("  %016llx | %016llx | %016llx | %s | %-8s | %-8s | %08x\n",
+		dprintf("  %016llx | %016llx | %016llx | %s | %-8s | %-8s | %s\n",
 			ptr,
 			ptr + range,
 			range,
 			GetCFGRangeState(cfgmap, ptr, range),
 			MemoryTypeToString(info.Type),
 			MemoryStateToString(info.State),
-			info.Protect
+			ConvertProtectionToString(info.Protect).c_str()
 		);
 
 		ptr += range;
