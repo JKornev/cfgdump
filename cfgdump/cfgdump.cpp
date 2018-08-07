@@ -218,7 +218,7 @@ void GetMemoryInfoString(MEMORY_BASIC_INFORMATION64& info, char* buffer, size_t 
 	if (result != S_OK)
 		return;
 
-	result = g_DebugSymbols->GetModuleNameString(DEBUG_MODNAME_IMAGE, 0, base, buffer, size, NULL);
+	result = g_DebugSymbols->GetModuleNameString(DEBUG_MODNAME_IMAGE, DEBUG_ANY_ID, base, buffer, size, NULL);
 	if (result != S_OK)
 		return;
 }
