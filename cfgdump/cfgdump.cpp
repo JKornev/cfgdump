@@ -6,6 +6,11 @@
 #include <string>
 #include <sstream>
 
+//TODO:
+// - Add support of x86 architecture
+// - Add support of legacy CFG 2-bit
+// - Is it possible to use output prefix?
+
 #pragma comment(lib, "dbgeng.lib")
 
 struct MapChunk {
@@ -23,9 +28,17 @@ WINDBG_EXTENSION_APIS ExtensionApis = { 0 };
 IDebugClient*      g_DebugClient = NULL;
 IDebugSymbols3*    g_DebugSymbols = NULL;
 IDebugDataSpaces2* g_DebugDataSpaces = NULL;
+IDebugControl3*    g_DebugControl = NULL;
 
 const ULONGLONG MAX_CFGMAP32_SIZE = (0x80000000ull >> 8) * sizeof(ULONG);
 const ULONGLONG MAX_CFGMAP64_SIZE = (0x800000000000ull >> 9) * sizeof(ULONGLONG);
+
+enum Platform {
+	x86,
+	x64
+};
+
+Platform g_currentPlatform = Platform::x86;
 
 // --------------------------- 
 
@@ -35,19 +48,25 @@ VOID WDBGAPI WinDbgExtensionDllInit(PWINDBG_EXTENSION_APIS lpExtensionApis, USHO
 
 	if (::DebugCreate(__uuidof(IDebugClient), (void**)&g_DebugClient) != S_OK)
 	{
-		dprintf("Acuqiring IDebugClient* Failled\n\n");
+		dprintf("Error, acuqiring IDebugClient* failed\n\n");
 		return;
 	}
 
 	if (g_DebugClient->QueryInterface(__uuidof(IDebugSymbols3), (void**)&g_DebugSymbols) != S_OK)
 	{
-		dprintf("Acuqiring IDebugSymbols* Failled\n\n");
+		dprintf("Error, acuqiring IDebugSymbols* failed\n\n");
 		return;
 	}
 
 	if (g_DebugClient->QueryInterface(__uuidof(IDebugDataSpaces2), (void**)&g_DebugDataSpaces) != S_OK)
 	{
-		dprintf("Acuqiring IDebugDataSpaces2* Failled\n\n");
+		dprintf("Error, acuqiring IDebugDataSpaces2* failed\n\n");
+		return;
+	}
+
+	if (g_DebugClient->QueryInterface(__uuidof(IDebugControl3), (void**)&g_DebugControl) != S_OK)
+	{
+		dprintf("Error, acuqiring IDebugControl3* failed\n\n");
 		return;
 	}
 }
@@ -58,6 +77,11 @@ LPEXT_API_VERSION WDBGAPI ExtensionApiVersion(void)
 }
 
 // --------------------------- 
+
+bool IsX64Platform()
+{
+	return (g_currentPlatform == Platform::x64);
+}
 
 const char* GetSpaces(unsigned int level)
 {
@@ -87,12 +111,18 @@ const char* GetSpaces(unsigned int level)
 
 void PrintCFGMapInfo(ULONGLONG cfgmap)
 {
-	dprintf("CFG Map64: %llx - %llx (%llx)\n\n", cfgmap, cfgmap + MAX_CFGMAP64_SIZE, MAX_CFGMAP64_SIZE);
+	if (IsX64Platform())
+		dprintf("CFG Map64: %llx - %llx (%llx)\n\n", cfgmap, cfgmap + MAX_CFGMAP64_SIZE, MAX_CFGMAP64_SIZE);
+	else
+		dprintf("CFG Map32: %llx - %llx (%llx)\n\n", cfgmap, cfgmap + MAX_CFGMAP32_SIZE, MAX_CFGMAP32_SIZE);
 }
 
 void PrintCFGChunkHeader(unsigned int level)
 {
-	dprintf("\n%s  Address          0123456789abcdef   0123456789abcdef   0123456789abcdef   0123456789abcdef\n", GetSpaces(level));
+	if (IsX64Platform())
+		dprintf("\n%s  Address          0123456789abcdef   0123456789abcdef   0123456789abcdef   0123456789abcdef\n", GetSpaces(level));
+	else
+		dprintf("\n%s  Address          0123456789abcdef   0123456789abcdef   0123456789abcdef   0123456789abcdef\n", GetSpaces(level));//TODO:
 }
 
 void PrintCFGChunk(const MapChunk& chunk, unsigned int level, bool clipped, bool& skipped, bool& empty)
@@ -205,7 +235,7 @@ std::string ConvertProtectionToString(DWORD protection)
 	return out.str();
 }
 
-void GetMemoryInfoString(MEMORY_BASIC_INFORMATION64& info, char* buffer, size_t size)
+void GetMemoryInfoString(const MEMORY_BASIC_INFORMATION64& info, char* buffer, size_t size)
 {
 	if (size >= 1)
 		buffer[0] = '\0';
@@ -221,6 +251,46 @@ void GetMemoryInfoString(MEMORY_BASIC_INFORMATION64& info, char* buffer, size_t 
 	result = g_DebugSymbols->GetModuleNameString(DEBUG_MODNAME_IMAGE, DEBUG_ANY_ID, base, buffer, size, NULL);
 	if (result != S_OK)
 		return;
+}
+
+void PrintCFGRegionHeader()
+{
+	if (IsX64Platform())
+		dprintf("   Start              End                Size           CFGbits Type       State      Protection\n");
+	else
+		dprintf("   Start      End        Size   CFGbits Type       State      Protection\n");//TODO:
+}
+
+const char* GetCFGRangeState(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG size);
+
+void PrintCFGRegion(ULONGLONG cfgmap, ULONGLONG ptr, ULONGLONG range, const MEMORY_BASIC_INFORMATION64& info)
+{
+	//TODO: add support of Wow64 map
+	char memory[MAX_PATH];
+	GetMemoryInfoString(info, memory, sizeof(memory));
+
+	if (IsX64Platform())
+		dprintf("  %016llx | %016llx | %016llx | %s | %-8s | %-8s | %-25s %s\n",
+				ptr,
+				ptr + range,
+				range,
+				GetCFGRangeState(cfgmap, ptr, range),
+				MemoryTypeToString(info.Type),
+				MemoryStateToString(info.State),
+				ConvertProtectionToString(info.Protect).c_str(),
+				memory
+		);
+	else
+		dprintf("  %08llx | %08llx | %08llx | %s | %-8s | %-8s | %-25s %s\n",
+				ptr,
+				ptr + range,
+				range,
+				GetCFGRangeState(cfgmap, ptr, range),
+				MemoryTypeToString(info.Type),
+				MemoryStateToString(info.State),
+				ConvertProtectionToString(info.Protect).c_str(),
+				memory
+		);
 }
 
 // --------------------------- 
@@ -249,24 +319,6 @@ bool LoadMapChunk(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG size, MapChunk&
 	return true;
 }
 
-bool IsMemoryFree(ULONGLONG address, ULONGLONG size)
-{
-	MEMORY_BASIC_INFORMATION64 info;
-	auto end = address + size;
-
-	do
-	{
-		HRESULT result = g_DebugDataSpaces->QueryVirtual(address, &info);
-		if (result != S_OK)
-			return false;
-
-
-	}
-	while (info.BaseAddress);
-
-	return false;
-}
-
 void FindCFGMap(ULONGLONG& cfgmap)
 {
 	ULONGLONG offset = 0;
@@ -293,6 +345,22 @@ void FindCFGMap(ULONGLONG& cfgmap)
 	}
 	
 	throw Exception("can't find CFG map");
+}
+
+void SelectArchitecture()
+{
+	ULONG architecture;
+
+	HRESULT result = g_DebugControl->GetActualProcessorType(&architecture);
+	if (result != S_OK)
+		throw Exception("can't retreive architecture, code: %x\n", result);
+
+	if (architecture == IMAGE_FILE_MACHINE_AMD64)
+		g_currentPlatform = Platform::x64;
+	else if (architecture == IMAGE_FILE_MACHINE_I386)
+		g_currentPlatform = Platform::x86;
+	else
+		throw Exception("architecture isn't supported: %x\n", architecture);
 }
 
 // --------------------------- 
@@ -345,6 +413,7 @@ DECLARE_API(cfgrange)
 		Arguments arguments(args);
 		ULONGLONG cfgmap = 0, start = 0, size = 0;
 
+		SelectArchitecture();
 		FindCFGMap(cfgmap);
 		
 		std::string arg;
@@ -412,7 +481,7 @@ void DumpMemoryInCFGRegion(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG size, 
 void DumpFullCFGMap(ULONGLONG cfgmap)
 {
 	auto cfgptr = cfgmap;
-	auto cfgtop = cfgmap + MAX_CFGMAP64_SIZE;
+	auto cfgtop = cfgmap + (IsX64Platform() ? MAX_CFGMAP64_SIZE : MAX_CFGMAP32_SIZE);
 
 	dprintf("\n");
 
@@ -459,6 +528,7 @@ DECLARE_API(cfgdump)
 	try
 	{
 		ULONGLONG cfgmap;
+		SelectArchitecture();
 		FindCFGMap(cfgmap);
 		DumpFullCFGMap(cfgmap);
 	}
@@ -506,7 +576,7 @@ void DumpMemoryMapInCFGRegion(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG siz
 	auto ptr = address;
 	auto top = address + size;
 
-	dprintf("   Start              End                Size           CFGbits Type       State      Protection\n");
+	PrintCFGRegionHeader();
 
 	while (ptr < top)
 	{
@@ -524,19 +594,7 @@ void DumpMemoryMapInCFGRegion(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG siz
 		if (ptr + range > top)
 			range = top - ptr;
 
-		char memory[MAX_PATH];
-		GetMemoryInfoString(info, memory, sizeof(memory));
-
-		dprintf("  %016llx | %016llx | %016llx | %s | %-8s | %-8s | %-25s %s\n",
-			ptr,
-			ptr + range,
-			range,
-			GetCFGRangeState(cfgmap, ptr, range),
-			MemoryTypeToString(info.Type),
-			MemoryStateToString(info.State),
-			ConvertProtectionToString(info.Protect).c_str(),
-			memory
-		);
+		PrintCFGRegion(cfgmap, ptr, range, info);
 
 		ptr += range;
 	}
@@ -545,7 +603,7 @@ void DumpMemoryMapInCFGRegion(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG siz
 void DumpCFGCoveredMemory(ULONGLONG cfgmap)
 {
 	auto cfgptr = cfgmap;
-	auto cfgtop = cfgmap + MAX_CFGMAP64_SIZE;
+	auto cfgtop = cfgmap + (IsX64Platform() ? MAX_CFGMAP64_SIZE : MAX_CFGMAP32_SIZE);
 
 	dprintf("\n");
 
@@ -564,7 +622,7 @@ void DumpCFGCoveredMemory(ULONGLONG cfgmap)
 
 		if (info.AllocationBase != cfgmap)
 		{
-			dprintf("Warning: allocation base missmatched %016llx != %016llx\n", info.AllocationBase, cfgmap);
+			dprintf("Warning: allocation base missmatched %llx != %llx\n", info.AllocationBase, cfgmap);
 			break;
 		}
 
@@ -592,6 +650,7 @@ DECLARE_API(cfgcover)
 	try
 	{
 		ULONGLONG cfgmap;
+		SelectArchitecture();
 		FindCFGMap(cfgmap);
 		DumpCFGCoveredMemory(cfgmap);
 	}
