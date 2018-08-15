@@ -349,14 +349,22 @@ void FindCFGMap(ULONGLONG& cfgmap)
 
 void SelectArchitecture()
 {
+	ULONG qualifier, dbgclass;
 	ULONG architecture;
 
-	HRESULT result = g_DebugControl->GetActualProcessorType(&architecture);
+	HRESULT result = g_DebugControl->GetDebuggeeType(&dbgclass, &qualifier);
+	if (result != S_OK)
+		throw Exception("can't retreive debuggee type, code: %x\n", result);
+
+	if (dbgclass != DEBUG_CLASS_USER_WINDOWS)
+		throw Exception("supported only usermode process debugging\n");
+
+	result = g_DebugControl->GetActualProcessorType(&architecture);
 	if (result != S_OK)
 		throw Exception("can't retreive architecture, code: %x\n", result);
 
 	if (architecture == IMAGE_FILE_MACHINE_AMD64)
-		g_currentPlatform = Platform::x64;
+		g_currentPlatform = (g_DebugControl->IsPointer64Bit() == S_OK ? Platform::x64 : Platform::x86);
 	else if (architecture == IMAGE_FILE_MACHINE_I386)
 		g_currentPlatform = Platform::x86;
 	else
