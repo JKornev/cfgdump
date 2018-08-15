@@ -1,7 +1,7 @@
 # cfgdump
 Windbg extension that allows you analyze Control Flow Guard map
 
-# Supported commands:
+# commands
 
 !cfgcover - prints memory map that is covered by CFG map and shows which region are protected by CFG bits
 
