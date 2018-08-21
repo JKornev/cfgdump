@@ -7,7 +7,6 @@
 #include <sstream>
 
 //TODO:
-// - Add support of x86 architecture
 // - Add support of legacy CFG 2-bit
 // - Is it possible to use output prefix?
 
@@ -25,17 +24,26 @@ EXT_API_VERSION ExtApiVersion = { 1, 1, EXT_API_VERSION_NUMBER, 0 };
 
 WINDBG_EXTENSION_APIS ExtensionApis = { 0 };
 
-IDebugClient*      g_DebugClient = NULL;
-IDebugSymbols3*    g_DebugSymbols = NULL;
-IDebugDataSpaces2* g_DebugDataSpaces = NULL;
-IDebugControl3*    g_DebugControl = NULL;
+IDebugClient*         g_DebugClient = NULL;
+IDebugSymbols3*       g_DebugSymbols = NULL;
+IDebugDataSpaces2*    g_DebugDataSpaces = NULL;
+IDebugControl3*       g_DebugControl = NULL;
 
-const ULONGLONG MAX_CFGMAP32_SIZE = (0x80000000ull >> 8) * sizeof(ULONG);
-const ULONGLONG MAX_CFGMAP64_SIZE = (0x800000000000ull >> 9) * sizeof(ULONGLONG);
+const auto VIRTUAL32_SIZE = 0x80000000ull;
+const auto VIRTUAL64_SIZE = 0x800000000000ull;
+const ULONGLONG MAX_CFGMAP32_SIZE = (VIRTUAL32_SIZE >> 8) * sizeof(ULONG);
+const ULONGLONG MAX_CFGMAP64_SIZE = (VIRTUAL64_SIZE >> 9) * sizeof(ULONGLONG);
 
 enum Platform {
 	x86,
 	x64
+};
+
+enum MapType
+{
+	Auto,
+	Cfg32,
+	Cfg64
 };
 
 Platform g_currentPlatform = Platform::x86;
@@ -49,25 +57,25 @@ VOID WDBGAPI WinDbgExtensionDllInit(PWINDBG_EXTENSION_APIS lpExtensionApis, USHO
 
 	if (::DebugCreate(__uuidof(IDebugClient), (void**)&g_DebugClient) != S_OK)
 	{
-		dprintf("Error, acuqiring IDebugClient* failed\n\n");
+		dprintf("Error, acuqiring IDebugClient failed\n\n");
 		return;
 	}
 
 	if (g_DebugClient->QueryInterface(__uuidof(IDebugSymbols3), (void**)&g_DebugSymbols) != S_OK)
 	{
-		dprintf("Error, acuqiring IDebugSymbols* failed\n\n");
+		dprintf("Error, acuqiring IDebugSymbols failed\n\n");
 		return;
 	}
 
 	if (g_DebugClient->QueryInterface(__uuidof(IDebugDataSpaces2), (void**)&g_DebugDataSpaces) != S_OK)
 	{
-		dprintf("Error, acuqiring IDebugDataSpaces2* failed\n\n");
+		dprintf("Error, acuqiring IDebugDataSpaces2 failed\n\n");
 		return;
 	}
 
 	if (g_DebugClient->QueryInterface(__uuidof(IDebugControl3), (void**)&g_DebugControl) != S_OK)
 	{
-		dprintf("Error, acuqiring IDebugControl3* failed\n\n");
+		dprintf("Error, acuqiring IDebugControl3 failed\n\n");
 		return;
 	}
 }
@@ -123,7 +131,7 @@ void PrintCFGChunkHeader(unsigned int level)
 	if (IsX64Platform())
 		dprintf("\n%s  Address          0123456789abcdef   0123456789abcdef   0123456789abcdef   0123456789abcdef\n", GetSpaces(level));
 	else
-		dprintf("\n%s  Address          0123456789abcdef   0123456789abcdef   0123456789abcdef   0123456789abcdef\n", GetSpaces(level));//TODO:
+		dprintf("\n%s  Address  0123456789abcdef   0123456789abcdef   0123456789abcdef   0123456789abcdef\n", GetSpaces(level));
 }
 
 void PrintCFGChunk(const MapChunk& chunk, unsigned int level, bool clipped, bool& skipped, bool& empty)
@@ -151,7 +159,10 @@ void PrintCFGChunk(const MapChunk& chunk, unsigned int level, bool clipped, bool
 			skipped = false;
 		}
 
-		dprintf("%s%016llx", GetSpaces(level), chunk.address + (i * 0x40));
+		if (IsX64Platform())
+			dprintf("%s%016llx", GetSpaces(level), chunk.address + (i * 0x40));
+		else
+			dprintf("%s%08llx", GetSpaces(level), chunk.address + (i * 0x40));
 
 		for (auto a = 0; a < 4; a++)
 		{
@@ -320,31 +331,68 @@ bool LoadMapChunk(ULONGLONG cfgmap, ULONGLONG address, ULONGLONG size, MapChunk&
 	return true;
 }
 
-void FindCFGMap(ULONGLONG& cfgmap)
+void FindCFGMap(ULONGLONG& cfgmap, MapType type)
 {
-	ULONGLONG offset = 0;
-	HRESULT result = g_DebugSymbols->GetOffsetByName("ntdll!LdrSystemDllInitBlock", &offset);
-	if (result != S_OK)
-		throw Exception("can't get address of ntdll!LdrSystemDllInitBlock");
 
-	for (auto i = 0; i < 20; i++)
+	ULONGLONG top, cfgsize, ptr = 0;
+
+	if (type == MapType::Cfg32)
 	{
-		offset += 0x10;
-
-		ULONG readed;
-		result = g_DebugDataSpaces->ReadVirtual(offset, &cfgmap, sizeof(cfgmap), &readed);
-		if (result != S_OK)
-			continue;
-
-		MEMORY_BASIC_INFORMATION64 info;
-		HRESULT result = g_DebugDataSpaces->QueryVirtual(cfgmap, &info);
-		if (result != S_OK)
-			continue;
-
-		if (cfgmap == info.AllocationBase && info.Type == MEM_MAPPED)
-			return;
+		cfgsize = MAX_CFGMAP32_SIZE;
+		top     = VIRTUAL32_SIZE;
 	}
-	
+	else if (type == MapType::Cfg64)
+	{
+		cfgsize = MAX_CFGMAP64_SIZE;
+		top     = VIRTUAL64_SIZE;
+	}
+	else
+	{
+		cfgsize = (IsX64Platform() ? MAX_CFGMAP64_SIZE : MAX_CFGMAP32_SIZE);
+		top     = (IsX64Platform() ? VIRTUAL64_SIZE    : VIRTUAL32_SIZE);
+	}
+
+	ULONGLONG start = 0;
+	bool calculation = false;
+
+	while (ptr < top)
+	{
+		MEMORY_BASIC_INFORMATION64 info;
+		HRESULT result = g_DebugDataSpaces->QueryVirtual(ptr, &info);
+		if (result != S_OK)
+		{
+			ptr += 0x1000;
+			continue;
+		}
+
+		ptr += info.RegionSize;
+
+		if (calculation)
+		{
+			if (start == info.AllocationBase)
+				continue;
+
+			calculation = false;
+			if (info.AllocationBase - start == cfgsize)
+			{
+				cfgmap = start;
+				return;
+			}
+		}
+
+		if (!calculation)
+		{
+			if (info.Type != MEM_MAPPED)
+				continue;
+			
+			if (info.BaseAddress != info.AllocationBase)
+				continue;
+
+			calculation = true;
+			start = info.AllocationBase;
+		}
+	}
+
 	throw Exception("can't find CFG map");
 }
 
@@ -413,7 +461,7 @@ DECLARE_API(cfgrange)
 		ULONGLONG cfgmap = 0, start = 0, size = 0;
 
 		SelectArchitecture();
-		FindCFGMap(cfgmap);
+		FindCFGMap(cfgmap, MapType::Auto);
 		
 		std::string arg;
 		if (!arguments.GetNext(arg))
@@ -528,7 +576,7 @@ DECLARE_API(cfgdump)
 	{
 		ULONGLONG cfgmap;
 		SelectArchitecture();
-		FindCFGMap(cfgmap);
+		FindCFGMap(cfgmap, MapType::Auto);
 		DumpFullCFGMap(cfgmap);
 	}
 	catch (Exception& e)
@@ -650,8 +698,52 @@ DECLARE_API(cfgcover)
 	{
 		ULONGLONG cfgmap;
 		SelectArchitecture();
-		FindCFGMap(cfgmap);
+		FindCFGMap(cfgmap, MapType::Auto);
 		DumpCFGCoveredMemory(cfgmap);
+	}
+	catch (Exception& e)
+	{
+		dprintf("Error: %s\n", e.What());
+	}
+	catch (std::exception& e)
+	{
+		dprintf("STDError: %s\n", e.what());
+	}
+}
+
+// --------------------------- 
+
+void DumpProcessCFGMap(MapType type)
+{
+	ULONGLONG cfgmap;
+
+	if (type == MapType::Auto)
+		return;
+
+	try
+	{
+		FindCFGMap(cfgmap, type);
+	}
+	catch (...)
+	{
+		return;
+	}
+
+	dprintf(
+		"CFG Map%s: %llx - %llx (%llx)\n",
+		(type == MapType::Cfg32 ? "32" : "64"),
+		cfgmap,
+		cfgmap + (type == MapType::Cfg32 ? MAX_CFGMAP32_SIZE : MAX_CFGMAP64_SIZE),
+		(type == MapType::Cfg32 ? MAX_CFGMAP32_SIZE : MAX_CFGMAP64_SIZE)
+	);
+}
+
+DECLARE_API(cfgmap)
+{
+	try
+	{
+		DumpProcessCFGMap(MapType::Cfg32);
+		DumpProcessCFGMap(MapType::Cfg64);
 	}
 	catch (Exception& e)
 	{

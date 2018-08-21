@@ -1,8 +1,8 @@
-LIBRARY   Memlog  
+LIBRARY   Cfg  
 EXPORTS  
   ExtensionApiVersion    @1  
   WinDbgExtensionDllInit @2  
   cfgdump                @3  
   cfgrange               @4
   cfgcover               @5
- 
+  cfgmap                 @6
