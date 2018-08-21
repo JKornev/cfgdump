@@ -8,3 +8,5 @@ Windbg extension that allows you analyze Control Flow Guard map
 !cfgrange \<address\> \<size\> - prints CFG bits for specified address range
 
 !cfgdump - prints all CFG bits for whole address space
+
+!cfgmap - prints available CFG maps
