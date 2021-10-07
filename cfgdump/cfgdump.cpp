@@ -365,6 +365,10 @@ void FindCFGMap(ULONGLONG& cfgmap, MapType type)
 			continue;
 		}
 
+		// Fix for NULL allocation base on modern OS
+		if (!info.AllocationBase)
+			info.AllocationBase = ptr;
+
 		ptr += info.RegionSize;
 
 		if (calculation)
